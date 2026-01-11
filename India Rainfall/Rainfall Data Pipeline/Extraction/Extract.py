@@ -6,6 +6,8 @@ from datetime import datetime
 import pandas as pd
 import os
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 metric_struct = StructType([
     StructField("avg", DoubleType(), True),
@@ -81,36 +83,63 @@ if max_CalDate:
     start_date = datetime.strptime(max_CalDate, "%Y-%m-%d").date()
 else:
     start_date = (CurrentDate - pd.DateOffset(months=1)).date()
+lock = Lock()
 
-print("Extraction Start")
-while True:
-    response = requests.get(base_url+f"?pageno={page}",params=parameters)
-    
+def fetch_page(page):
+    response = requests.get(base_url + f"?pageno={page}", params=parameters)
+
     if response.status_code != 200:
-        print(f"Error: {response.status_code}")
-        break
+        return [], []
 
     data = response.json()
-    Header_API_Data = data.get('Headers', {}).get('Items', [])
-    Page_API_Data = data.get('Data', [])
+    Header_API_Data = data.get("Headers", {}).get("Items", [])
+    Page_API_Data = data.get("Data", [])
 
-    if not Page_API_Data:
-        print("No more pages.")
-        break
+    filtered_rows = []
+    filtered_headers = []
 
     for row in Page_API_Data:
         cd = row.get("CalendarDay")
         if cd:
             cd_date = datetime.strptime(cd, "%Y-%m-%d").date()
             if start_date <= cd_date <= CurrentDate:
-                    print("Included")
-                    page_data.append(row)
-                    header_data.extend(Header_API_Data)
-            else:
-                pass
-    
-    page += 1
+                print("Included")
+                filtered_rows.append(row)
+                filtered_headers.extend(Header_API_Data)
+
+    return filtered_rows, filtered_headers
+
+
+print("Extraction Start")
+
+page = 1
+batch_size = 10
+max_workers = 10
+
+while True:
+    pages = list(range(page, page + batch_size))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(fetch_page, p): p for p in pages}
+
+        has_data = False
+        for future in as_completed(futures):
+            rows, headers = future.result()
+
+            if rows:
+                has_data = True
+                with lock:
+                    page_data.extend(rows)
+                    header_data.extend(headers)
+
+    if not has_data:
+        print("No more pages.")
+        break
+
+    page += batch_size
     print(page)
+
+print("Extraction End")
 
 print("Extraction End")
 
